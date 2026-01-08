@@ -86,7 +86,7 @@ jobs:
             --image-id $AMI_ID \
             --instance-type t3.micro \
             --iam-instance-profile Name=EC2-ECR-Pull \
-            --security-group-ids sg-XXXXXXXX \
+            --security-group-ids sg-0e2975f330f66f9e2 \
             --subnet-id subnet-00d6528964bbc421a \
             --associate-public-ip-address \
             --user-data file://ec2-user-data.sh
