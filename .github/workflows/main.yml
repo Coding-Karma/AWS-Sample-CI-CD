@@ -1,0 +1,51 @@
+name: CI Push to ECR
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS using OIDC (NO SECRETS)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::014780801274:role/github-actions-ci-role
+          aws-region: eu-north-1
+
+      # 3️⃣ Verify identity (MOST IMPORTANT)
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      # 4️⃣ Login to ECR
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password \
+          | docker login \
+            --username AWS \
+            --password-stdin 014780801274.dkr.ecr.eu-north-1.amazonaws.com
+
+      # 5️⃣ Build Docker image
+      - name: Build Docker image
+        run: docker build -t secure-app:${{ github.sha }} .
+
+      # 6️⃣ Push image to ECR
+      - name: Push Docker image to ECR
+        run: |
+          docker tag secure-app:${{ github.sha }} \
+            014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
+
+          docker push \
+            014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
