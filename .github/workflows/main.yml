@@ -1,16 +1,14 @@
-name: CI Push to ECR
+name: Build, Sign, Verify, Deploy to EC2
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch: {}
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,18 +16,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2️⃣ Configure AWS using OIDC (NO SECRETS)
+      # 2️⃣ AWS auth via OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::014780801274:role/CI
           aws-region: eu-north-1
 
-      # 3️⃣ Verify identity
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
-
-      # 4️⃣ Login to ECR
+      # 3️⃣ Login to ECR
       - name: Login to Amazon ECR
         run: |
           aws ecr get-login-password \
@@ -37,12 +31,12 @@ jobs:
             --username AWS \
             --password-stdin 014780801274.dkr.ecr.eu-north-1.amazonaws.com
 
-      # 5️⃣ Build Docker image
+      # 4️⃣ Build image
       - name: Build Docker image
         run: docker build -t secure-app:${{ github.sha }} .
 
-      # 6️⃣ Push image to ECR
-      - name: Push Docker image to ECR
+      # 5️⃣ Push image
+      - name: Push Docker image
         run: |
           docker tag secure-app:${{ github.sha }} \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
@@ -50,14 +44,55 @@ jobs:
           docker push \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 7️⃣ Install Cosign
+      # 6️⃣ Install Cosign
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # 8️⃣ Sign image using GitHub OIDC
+      # 7️⃣ Sign image
       - name: Sign image
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign sign \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
+
+      # 8️⃣ Resolve image digest
+      - name: Resolve image digest
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name secure-app \
+            --image-ids imageTag=${{ github.sha }} \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
+
+      # 9️⃣ Enforce signature verification
+      - name: Verify image signature
+        run: |
+          cosign verify \
+            014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
+
+      # 🔟 Write EC2 user-data safely
+      - name: Write EC2 user-data
+        run: |
+          printf '%s\n' \
+          '#!/bin/bash' \
+          'yum update -y' \
+          'amazon-linux-extras install docker -y' \
+          'systemctl start docker' \
+          'systemctl enable docker' \
+          'aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 014780801274.dkr.ecr.eu-north-1.amazonaws.com' \
+          "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
+          > ec2-user-data.sh
+
+      # 1️⃣1️⃣ Launch EC2
+      - name: Launch EC2 instance
+        run: |
+          aws ec2 run-instances \
+            --image-id ami-0b8b44ec9a8f90422 \
+            --instance-type t3.micro \
+            --iam-instance-profile Name=EC2-ECR-Pull \
+            --security-group-ids sg-XXXXXXXX \
+            --subnet-id subnet-XXXXXXXX \
+            --user-data file://ec2-user-data.sh
