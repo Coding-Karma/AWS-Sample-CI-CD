@@ -45,7 +45,7 @@ jobs:
           docker push \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 6️⃣ Resolve image digest
+      # 6️⃣ Resolve image digest (immutable)
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
@@ -70,13 +70,23 @@ jobs:
           "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
           > ec2-user-data.sh
 
-      # 8️⃣ Launch EC2 instance
+      # 8️⃣ Launch EC2 instance (DYNAMIC AMI)
       - name: Launch EC2 instance
         run: |
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
+                     "Name=state,Values=available" \
+            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+            --output text)
+
+          echo "Using AMI: $AMI_ID"
+
           aws ec2 run-instances \
-            --image-id ami-0b8b44ec9a8f90422 \
+            --image-id $AMI_ID \
             --instance-type t3.micro \
             --iam-instance-profile Name=EC2-ECR-Pull \
             --security-group-ids sg-XXXXXXXX \
             --subnet-id subnet-XXXXXXXX \
+            --associate-public-ip-address \
             --user-data file://ec2-user-data.sh
