@@ -1,0 +1,60 @@
+name: Launch EC2 and Run App
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AWS auth
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::014780801274:role/CI
+          aws-region: eu-north-1
+
+      # Resolve digest
+      - name: Resolve image digest
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name secure-app \
+            --image-ids imageTag=${{ github.sha }} \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
+
+      # Verify signature (SECURITY GATE)
+      - name: Verify image signature
+        run: |
+          cosign verify \
+            014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
+
+      # Launch EC2
+      - name: Launch EC2 instance
+        run: |
+          aws ec2 run-instances \
+            --image-id ami-0b8b44ec9a8f90422 \
+            --instance-type t3.micro \
+            --iam-instance-profile Name=EC2-ECR-Pull \
+            --security-group-ids sg-XXXXXXXX \
+            --subnet-id subnet-XXXXXXXX \
+            --user-data "$(base64 <<EOF
+#!/bin/bash
+yum update -y
+amazon-linux-extras install docker -y
+systemctl start docker
+aws ecr get-login-password --region eu-north-1 \
+| docker login --username AWS --password-stdin 014780801274.dkr.ecr.eu-north-1.amazonaws.com
+docker run -d -p 80:5000 \
+  014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
+EOF
+)"
