@@ -1,10 +1,10 @@
-name: Build and Deploy to EC2 (No Cosign)
+name: Build, Sign and Deploy to EC2
 
 on:
   workflow_dispatch: {}
 
 permissions:
-  id-token: write
+  id-token: write   # REQUIRED for Cosign keyless
   contents: read
 
 jobs:
@@ -45,7 +45,19 @@ jobs:
           docker push \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 6️⃣ Resolve image digest (immutable)
+      # 6️⃣ Install Cosign
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      # 7️⃣ Sign image with Cosign (OIDC, keyless)
+      - name: Sign image
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign \
+            014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
+
+      # 8️⃣ Resolve image digest (immutable)
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
@@ -57,7 +69,7 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
           echo "Resolved digest: $DIGEST"
 
-      # 7️⃣ Write EC2 user-data
+      # 9️⃣ Write EC2 user-data (PULL BY DIGEST)
       - name: Write EC2 user-data
         run: |
           printf '%s\n' \
@@ -70,7 +82,7 @@ jobs:
           "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
           > ec2-user-data.sh
 
-      # 8️⃣ Launch EC2 instance (DYNAMIC AMI)
+      # 🔟 Launch EC2 instance
       - name: Launch EC2 instance
         run: |
           AMI_ID=$(aws ec2 describe-images \
@@ -79,8 +91,6 @@ jobs:
                      "Name=state,Values=available" \
             --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
             --output text)
-
-          echo "Using AMI: $AMI_ID"
 
           aws ec2 run-instances \
             --image-id $AMI_ID \
