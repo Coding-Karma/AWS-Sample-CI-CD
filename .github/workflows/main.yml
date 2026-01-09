@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  id-token: write      # REQUIRED for keyless signing (OIDC)
+  id-token: write        # REQUIRED for keyless Cosign
   contents: read
 
 jobs:
@@ -49,16 +49,24 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # 7️⃣ Sign image (KEYLESS + REKOR GUARANTEED)
+      # 7️⃣ Install Rekor CLI (OPTION 1)
+      - name: Install Rekor CLI
+        run: |
+          curl -sSL https://github.com/sigstore/rekor/releases/latest/download/rekor-linux-amd64 \
+            -o rekor-cli
+          chmod +x rekor-cli
+          sudo mv rekor-cli /usr/local/bin/rekor-cli
+
+      # 8️⃣ Sign image (KEYLESS + REKOR GUARANTEED)
       - name: Sign image with Cosign
         env:
           COSIGN_EXPERIMENTAL: "true"
-          COSIGN_YES: "true"     # 🔴 THIS IS THE CRITICAL FIX
+          COSIGN_YES: "true"       # 🔴 CRITICAL: forces Rekor upload
         run: |
           cosign sign \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 8️⃣ Resolve immutable digest AFTER signing
+      # 9️⃣ Resolve immutable digest AFTER signing
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
@@ -71,13 +79,13 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
           echo "Resolved digest: $DIGEST"
 
-      # 9️⃣ (Optional but recommended) Prove Rekor entry exists
+      # 🔟 Verify Rekor transparency log entry (PROOF)
       - name: Verify Rekor transparency log
         run: |
           rekor-cli search \
             --artifact 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
 
-      # 🔟 Write EC2 user-data (PULL BY DIGEST)
+      # 1️⃣1️⃣ Write EC2 user-data (pull by DIGEST)
       - name: Write EC2 user-data
         run: |
           printf '%s\n' \
@@ -90,7 +98,7 @@ jobs:
           "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
           > ec2-user-data.sh
 
-      # 1️⃣1️⃣ Launch EC2
+      # 1️⃣2️⃣ Launch EC2 instance
       - name: Launch EC2 instance
         run: |
           AMI_ID=$(aws ec2 describe-images \
