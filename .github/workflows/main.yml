@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  id-token: write   # REQUIRED for Cosign keyless
+  id-token: write
   contents: read
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # 7️⃣ Sign image with Cosign (OIDC, keyless)
+      # 7️⃣ Sign image (OIDC, keyless)
       - name: Sign image
         env:
           COSIGN_EXPERIMENTAL: "true"
@@ -57,7 +57,7 @@ jobs:
           cosign sign \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 8️⃣ Resolve image digest (immutable)
+      # 8️⃣ Resolve image digest
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
@@ -69,7 +69,7 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
           echo "Resolved digest: $DIGEST"
 
-      # 9️⃣ Write EC2 user-data (PULL BY DIGEST)
+      # 9️⃣ Write EC2 user-data
       - name: Write EC2 user-data
         run: |
           printf '%s\n' \
@@ -82,7 +82,7 @@ jobs:
           "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
           > ec2-user-data.sh
 
-      # 🔟 Launch EC2 instance
+      # 🔟 Launch EC2 instance (WITH KEY PAIR)
       - name: Launch EC2 instance
         run: |
           AMI_ID=$(aws ec2 describe-images \
@@ -95,6 +95,7 @@ jobs:
           aws ec2 run-instances \
             --image-id $AMI_ID \
             --instance-type t3.micro \
+            --key-name ec2-debug-key \   # 👈 THIS IS THE ONLY ADDITION
             --iam-instance-profile Name=EC2-ECR-Pull \
             --security-group-ids sg-0e2975f330f66f9e2 \
             --subnet-id subnet-00d6528964bbc421a \
