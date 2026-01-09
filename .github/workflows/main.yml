@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  id-token: write
+  id-token: write      # REQUIRED for keyless signing (OIDC)
   contents: read
 
 jobs:
@@ -12,11 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout code
+      # 1️⃣ Checkout source
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2️⃣ AWS auth via OIDC
+      # 2️⃣ AWS auth via OIDC (NO SECRETS)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -31,12 +31,12 @@ jobs:
             --username AWS \
             --password-stdin 014780801274.dkr.ecr.eu-north-1.amazonaws.com
 
-      # 4️⃣ Build Docker image
+      # 4️⃣ Build image (tag = git commit SHA)
       - name: Build Docker image
         run: |
           docker build -t secure-app:${{ github.sha }} .
 
-      # 5️⃣ Push Docker image to ECR
+      # 5️⃣ Push image to ECR
       - name: Push Docker image
         run: |
           docker tag secure-app:${{ github.sha }} \
@@ -49,19 +49,21 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # 7️⃣ Sign image (Cosign keyless via OIDC)
-      - name: Sign image
+      # 7️⃣ Sign image (KEYLESS + REKOR GUARANTEED)
+      - name: Sign image with Cosign
         env:
           COSIGN_EXPERIMENTAL: "true"
+          COSIGN_YES: "true"     # 🔴 THIS IS THE CRITICAL FIX
         run: |
           cosign sign \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 8️⃣ Resolve image digest (immutable)
+      # 8️⃣ Resolve immutable digest AFTER signing
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
             --repository-name secure-app \
+            --region eu-north-1 \
             --image-ids imageTag=${{ github.sha }} \
             --query 'imageDetails[0].imageDigest' \
             --output text)
@@ -69,7 +71,13 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
           echo "Resolved digest: $DIGEST"
 
-      # 9️⃣ Write EC2 user-data
+      # 9️⃣ (Optional but recommended) Prove Rekor entry exists
+      - name: Verify Rekor transparency log
+        run: |
+          rekor-cli search \
+            --artifact 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
+
+      # 🔟 Write EC2 user-data (PULL BY DIGEST)
       - name: Write EC2 user-data
         run: |
           printf '%s\n' \
@@ -82,15 +90,14 @@ jobs:
           "docker run -d -p 80:5000 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}" \
           > ec2-user-data.sh
 
-      # 🔟 Launch EC2 instance (SAFE AMI LOOKUP)
+      # 1️⃣1️⃣ Launch EC2
       - name: Launch EC2 instance
         run: |
-          AMI_ID=$(aws ec2 describe-images --owners amazon \
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
             --filters Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2 Name=state,Values=available \
             --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
             --output text)
-
-          echo "Using AMI: $AMI_ID"
 
           aws ec2 run-instances \
             --image-id "$AMI_ID" \
