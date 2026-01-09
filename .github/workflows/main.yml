@@ -23,7 +23,7 @@ jobs:
           role-to-assume: arn:aws:iam::014780801274:role/CI
           aws-region: eu-north-1
 
-      # 3️⃣ Login to ECR
+      # 3️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
         run: |
           aws ecr get-login-password \
@@ -36,7 +36,7 @@ jobs:
         run: |
           docker build -t secure-app:${{ github.sha }} .
 
-      # 5️⃣ Push Docker image
+      # 5️⃣ Push Docker image to ECR
       - name: Push Docker image
         run: |
           docker tag secure-app:${{ github.sha }} \
@@ -49,25 +49,28 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # 7️⃣ Install Rekor CLI (FIXED)
+      # 7️⃣ Install Rekor CLI (CORRECT – tarball)
       - name: Install Rekor CLI
         run: |
-          curl -L https://github.com/sigstore/rekor/releases/latest/download/rekor-linux-amd64 \
-            -o rekor-cli
-          chmod +x rekor-cli
-          sudo mv rekor-cli /usr/local/bin/rekor-cli
+          curl -L https://github.com/sigstore/rekor/releases/latest/download/rekor-linux-amd64.tar.gz \
+            -o rekor.tar.gz
+
+          tar -xzf rekor.tar.gz
+          chmod +x rekor
+          sudo mv rekor /usr/local/bin/rekor-cli
+
           rekor-cli version
 
       # 8️⃣ Sign image (KEYLESS + REKOR)
       - name: Sign image with Cosign
         env:
           COSIGN_EXPERIMENTAL: "true"
-          COSIGN_YES: "true"     # 🔴 REQUIRED to upload to Rekor
+          COSIGN_YES: "true"   # 🔴 REQUIRED for Rekor upload
         run: |
           cosign sign \
             014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app:${{ github.sha }}
 
-      # 9️⃣ Resolve image digest AFTER signing
+      # 9️⃣ Resolve immutable digest AFTER signing
       - name: Resolve image digest
         run: |
           DIGEST=$(aws ecr describe-images \
@@ -80,13 +83,13 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
           echo "Resolved digest: $DIGEST"
 
-      # 🔟 Verify Rekor transparency log (PROOF)
+      # 🔟 Verify Rekor transparency log entry
       - name: Verify Rekor entry
         run: |
           rekor-cli search \
             --artifact 014780801274.dkr.ecr.eu-north-1.amazonaws.com/secure-app@${IMAGE_DIGEST}
 
-      # 1️⃣1️⃣ Write EC2 user-data (PULL BY DIGEST)
+      # 1️⃣1️⃣ Write EC2 user-data (pull by DIGEST)
       - name: Write EC2 user-data
         run: |
           printf '%s\n' \
